@@ -193,7 +193,8 @@
       trustHTMLErr = e;
     }
     if (trustHTMLErr) {
-      trustHTMLErr();
+      console.error("Trusted HTML initialization failed:", trustHTMLErr);
+      return;
     }
     try {
       let getWord = function(tag) {
@@ -531,7 +532,7 @@
       };
       Element.prototype.incAttribute111 = function(p) {
         let v = +this.getAttribute000(p) || 0;
-        v = v > 1e9 ? v + 1 : 9;
+        v = v >= 1e9 ? 9 : v + 1;
         this.setAttribute000(p, `${v}`);
         return v;
       };
@@ -1388,7 +1389,8 @@
               break;
             }
           }
-          if (!requiredUpdate && e !== mirroElmArr.length + 1)
+          const expectedChildCount = mirroElmArr.length + (infoExpander ? 1 : 0);
+          if (!requiredUpdate && e !== expectedChildCount)
             requiredUpdate = true;
         }
         if (requiredUpdate) {
@@ -1950,10 +1952,11 @@
           inlineExpanderCnt.showCollapseButton = false;
         if (inlineExpanderCnt.showExpandButton === true)
           inlineExpanderCnt.showExpandButton = false;
-        if (inlineExpanderCnt.expandButton instanceof HTMLElement_) {
-          inlineExpanderCnt.expandButton = null;
-          inlineExpanderCnt.expandButton.remove();
+        const expandButton = inlineExpanderCnt.expandButton;
+        if (expandButton instanceof HTMLElement_) {
+          expandButton.remove();
         }
+        inlineExpanderCnt.expandButton = null;
       };
       const fixInlineExpanderDisplay = (inlineExpanderCnt) => {
         try {
@@ -2954,7 +2957,7 @@
             const chatContainer = chatElem ? chatElem.closest("#chat-container") || chatElem : null;
             if (chatContainer && !chatContainer.hasAttribute000("tyt-chat-container")) {
               for (const p2 of document.querySelectorAll("[tyt-chat-container]")) {
-                p2.removeAttribute000("[tyt-chat-container]");
+                p2.removeAttribute000("tyt-chat-container");
               }
               chatContainer.setAttribute111("tyt-chat-container", "");
             }
@@ -3685,12 +3688,21 @@
 
   const commonUtil = {
     onPageLoad: function(callback) {
+      let fired = false;
+
+      const run = () => {
+        if (fired) return;
+        fired = true;
+        Promise.resolve().then(callback);
+      };
+
       if (document.readyState === "complete") {
-        callback();
-      } else {
-        window.addEventListener("DOMContentLoaded", callback, { once: true });
-        window.addEventListener("load", callback, { once: true });
+        run();
+        return;
       }
+
+      window.addEventListener("DOMContentLoaded", run, { once: true });
+      window.addEventListener("load", run, { once: true });
     },
     addStyle: function(style) {
       GM_addStyle(style);
@@ -3703,21 +3715,30 @@
       }
     },
     waitForElementByInterval: function(selector, target = document.body, allowEmpty = true, delay = 10, maxDelay = 10 * 1e3) {
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve) => {
         let totalDelay = 0;
-        let element = target.querySelector(selector);
-        let result = allowEmpty ? !!element : !!element && !!element.innerHTML;
-        if (result) {
-          resolve(element);
+
+        const check = () => {
+          const element = target.querySelector(selector);
+          const ok = allowEmpty ? !!element : !!element && !!element.innerHTML;
+          return ok ? element : null;
+        };
+
+        const first = check();
+        if (first) {
+          resolve(first);
+          return;
         }
+
         const elementInterval = setInterval(() => {
           if (totalDelay >= maxDelay) {
             clearInterval(elementInterval);
             resolve(null);
+            return;
           }
-          element = target.querySelector(selector);
-          result = allowEmpty ? !!element : !!element && !!element.innerHTML;
-          if (result) {
+
+          const element = check();
+          if (element) {
             clearInterval(elementInterval);
             resolve(element);
           } else {
@@ -3738,8 +3759,13 @@
         });
       }
       return new Promise((resolve) => {
-        const speedControl = StorageUtil.getValue(StorageUtil.keys.youtube.functionState.speedControl, true);
-        if (!speedControl) {
+        const defState = StorageUtil.getDefaultFunctionState();
+        const currentState = {
+          ...defState,
+          ...(StorageUtil.getValue(StorageUtil.keys.youtube.functionState, defState) || {})
+        };
+
+        if (!currentState.isOpenSpeedControl) {
           resolve();
           return;
         }
@@ -3957,7 +3983,7 @@
   const MarkOrRemoveAd = {
     generateRemoveAdElementId: "removeADHTMLElement_" + Math.ceil(Math.random() * 1e8),
     markADHTMLElement: function() {
-      if (document.querySelector(this.generateRemoveAdElementId)) {
+      if (document.querySelector(`#${this.generateRemoveAdElementId}`)) {
         return;
       }
       let cssMarkSelectorArr = [
@@ -4190,8 +4216,13 @@
         }
       }
       close() {
-        document.body.removeChild(this.mask);
-        document.querySelector("head").removeChild(this.dialogStyle);
+        if (this.mask && this.mask.parentNode) {
+          this.mask.parentNode.removeChild(this.mask);
+        }
+
+        if (this.dialogStyle && this.dialogStyle.parentNode) {
+          this.dialogStyle.parentNode.removeChild(this.dialogStyle);
+        }
       }
       setStyle(ele, styleObj) {
         for (let attr in styleObj) {
@@ -4455,10 +4486,9 @@
   };
   const ToolBox = {
     getFunctionState: function() {
-      return StorageUtil.getValue(
-        StorageUtil.keys.youtube.functionState,
-        StorageUtil.getDefaultFunctionState()
-      );
+      const def = StorageUtil.getDefaultFunctionState();
+      const stored = StorageUtil.getValue(StorageUtil.keys.youtube.functionState, def) || {};
+      return { ...def, ...stored };
     },
     insertStyle: function() {
       const speedOptionsStyle = `
@@ -5143,12 +5173,24 @@
     }
   };
 
+  const defaultFunctionState = StorageUtil.getDefaultFunctionState();
+  const storedFunctionState = StorageUtil.getValue(
+    StorageUtil.keys.youtube.functionState,
+    defaultFunctionState
+  ) || {};
+
+  const functionState = {
+    ...defaultFunctionState,
+    ...storedFunctionState
+  };
+
   const {
     isOpenCommentTable,
     isOpenThemeProgressBar,
     isOpenSpeedControl,
-    isOpenMarkOrRemoveAd
-  } = StorageUtil.getValue(StorageUtil.keys.youtube.functionState, StorageUtil.getDefaultFunctionState());
+    isOpenMarkOrRemoveAd,
+    isOpenYoutubedownloading
+  } = functionState;
   /*!
    * credit to Benjamin Philipp
    * MIT
