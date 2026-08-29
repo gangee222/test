@@ -473,6 +473,24 @@
       const qsAll = (elm, selector) => {
         return HTMLElement_.prototype.querySelectorAll.call(elm, selector);
       };
+      const _querySelector = function(selector) {
+        return this instanceof Element ? qsOne(this, selector) : null;
+      };
+      const closestFromAnchor = function(selector) {
+        if (!(this instanceof Node)) return null;
+        const el = this instanceof Element ? this : this.parentElement;
+        return el ? el.closest(selector) : null;
+      };
+      const isVideoPlaying = (media) => {
+        return (
+          !!media &&
+          typeof media.paused === "boolean" &&
+          !media.paused &&
+          !media.ended &&
+          media.readyState >= 2
+        );
+      };
+      const findContentsRenderer = () => ({ parent: null, index: -1 });
       const defineProperties = (p, o) => {
         if (!p) {
           return;
@@ -4040,16 +4058,14 @@
     },
     isDarkTheme: function(enabled, isReload) {
       const cookies = document.cookie.split("; ");
-      let prefCookie = cookies.find((cookie) => cookie.startsWith("PREF="));
-      let prefValue = prefCookie ? prefCookie.split("=")[1] : "f6=400";
-      prefValue = prefValue.replace(/&f6=\d+/, "").replace(/f6=\d+/, "");
-      const prefix = prefValue ? "&" : "";
-      if (enabled) {
-        prefValue += prefix + "f6=400";
-      } else {
-        prefValue += prefix + "f6=80000";
-      }
-      document.cookie = `PREF=${prefValue}; path=/; domain=.youtube.com; secure`;
+      const prefCookie = cookies.find(cookie => cookie.startsWith("PREF="));
+      const raw = prefCookie ? prefCookie.slice(5) : "";
+
+      const params = new URLSearchParams(raw);
+      params.set("f6", enabled ? "400" : "80000");
+
+      document.cookie = `PREF=${params.toString()}; path=/; domain=.youtube.com; secure`;
+
       if (isReload) {
         this.reloadYouTube();
       }
@@ -4058,53 +4074,65 @@
 
   const Screenshot = {
     start: function() {
-      var SF_Codhemeu = "png";
-      var extension = "png";
-      var appendixTitle = "screenshot." + extension;
-      var title;
-      var headerEls = document.querySelectorAll(
-        "h1.title.ytd-video-primary-info-renderer"
-      );
-      function SetTitle() {
-        if (headerEls.length > 0) {
-          title = headerEls[0].innerText.trim();
-          return true;
-        } else {
-          return false;
-        }
+      const video =
+        document.querySelector("video.video-stream, .html5-main-video") ||
+        document.querySelector("video");
+
+      if (!video || !video.videoWidth || !video.videoHeight) {
+        console.warn("Screenshot: no valid video element found.");
+        return;
       }
-      if (SetTitle() == false) {
-        headerEls = document.querySelectorAll("h1.watch-title-container");
-        if (SetTitle() == false)
-          title = "";
+
+      const titleRaw =
+        document.querySelector(
+          "h1.ytd-watch-metadata, h1.title.ytd-video-primary-info-renderer, h1.watch-title-container"
+        )?.innerText?.trim() || "youtube";
+
+      const safeTitle = titleRaw
+        .replace(/[\\/:*?"<>|]+/g, "_")
+        .slice(0, 120);
+
+      const total = Math.max(0, Math.floor(video.currentTime || 0));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+
+      const time = [h, m, s]
+        .filter((v, i) => i > 0 || h > 0)
+        .map(n => String(n).padStart(2, "0"))
+        .join("-");
+
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      try {
+        canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+      } catch (err) {
+        console.error("Screenshot capture failed:", err);
+        return;
       }
-      var player = document.getElementsByClassName("video-stream")[0];
-      var time = player.currentTime;
-      title += " ";
-      let minutes = Math.floor(time / 60);
-      time = Math.floor(time - minutes * 60);
-      if (minutes > 60) {
-        let hours = Math.floor(minutes / 60);
-        minutes -= hours * 60;
-        title += hours + "-";
+
+      if (typeof canvas.toBlob !== "function") {
+        console.error("Screenshot: canvas.toBlob is not supported.");
+        return;
       }
-      title += minutes + "-" + time;
-      title += " " + appendixTitle;
-      var canvas = document.createElement("canvas");
-      canvas.width = player.videoWidth;
-      canvas.height = player.videoHeight;
-      canvas.getContext("2d").drawImage(player, 0, 0, canvas.width, canvas.height);
-      var downloadLink = document.createElement("a");
-      downloadLink.download = title;
-      function DownloadBlob(blob) {
-        downloadLink.href = URL.createObjectURL(blob);
-        downloadLink.click();
-      }
-      {
-        canvas.toBlob(async function(blob) {
-          DownloadBlob(blob);
-        }, "image/" + SF_Codhemeu);
-      }
+
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+
+        a.href = url;
+        a.download = `${safeTitle} ${time} screenshot.png`;
+
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }, "image/png");
     }
   };
 
@@ -4481,7 +4509,16 @@
     },
     getLanguage: function() {
       const lang = this.getLang();
-      return this.language[lang] ?? this.language.en;
+      const fallback = this.language.en;
+      const current = this.language[lang] || fallback;
+
+      return {
+        direction: current.direction || fallback.direction || "ltr",
+        content: {
+          ...fallback.content,
+          ...current.content
+        }
+      };
     }
   };
   const ToolBox = {
@@ -4710,22 +4747,32 @@
       const language = LangueUtil.getLanguage();
       const downloadingConfirm = StorageUtil.getValue(StorageUtil.keys.youtube.downloadingConfirm, false);
       const downloadOperat = () => {
-        const url = "https://www.grabshorts.com/" + LangueUtil.getLang() + "/yt?s=40&url=" + window.location.href;
+        if (!/youtube\.com$/i.test(location.hostname)) return;
+
+        if (!/\/(watch|shorts|live)\b/i.test(location.pathname)) {
+          return;
+        }
+
+        const url =
+          "https://www.grabshorts.com/" +
+          encodeURIComponent(LangueUtil.getLang()) +
+          "/yt?s=40&url=" +
+          encodeURIComponent(location.href);
+
         commonUtil.openInTab(url);
       };
       if (downloadingConfirm) {
         downloadOperat();
       } else {
         ComstomConfirm.show({
-          "message": language.content.download_confirm_message,
-          "enter": language.content.download_enter_text,
-          "cancel": language.content.download_cancel_text,
-          "onEnter": function() {
+          message: language.content.download_confirm_message,
+          enter: language.content.download_enter_text,
+          cancel: language.content.download_cancel_text,
+          onEnter: function() {
             downloadOperat();
             StorageUtil.setValue(StorageUtil.keys.youtube.downloadingConfirm, true);
           },
-          "onCancel": function() {
-          }
+          onCancel: function() {}
         });
       }
     },
@@ -4979,13 +5026,9 @@
       }, 500);
     },
     showSettingDialog: function() {
-      const functionState = StorageUtil.getValue(StorageUtil.keys.youtube.functionState, {
-        isOpenCommentTable: true,
-        isOpenThemeProgressBar: true,
-        isOpenSpeedControl: true,
-        isOpenMarkOrRemoveAd: true,
-        isOpenYoutubedownloading: true
-      });
+      const def = StorageUtil.getDefaultFunctionState();
+      const stored = StorageUtil.getValue(StorageUtil.keys.youtube.functionState, def) || {};
+      const functionState = { ...def, ...stored };
       const language = LangueUtil.getLanguage();
       const styleSheet = `
 			.row-item{
