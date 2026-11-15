@@ -1,0 +1,14 @@
+*.apk
+*.obb
+*.so
+*.tmp
+*.part
+*.keystore
+*.jks
+.gradle/
+.idea/
+build/
+local.properties
+__pycache__/
+*.pyc
+.DS_Store
